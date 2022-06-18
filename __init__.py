@@ -21,13 +21,13 @@ class Var(Structure):
         self.Type = 1
         self.Attrib = 0x11
         if val:
-            _AhkApi__local.api.VarAssign(byref(self), byref(ExprTokenType(val)))
+            _local.api.VarAssign(byref(self), byref(ExprTokenType(val)))
 
     def _output(self):
         if out := self._out:
-            _AhkApi__local.api.VarToToken(byref(self), byref(tk := ExprTokenType()))
+            _local.api.VarToToken(byref(self), byref(tk := ExprTokenType()))
             self.value = tk.value
-        _AhkApi__local.api.VarFree(byref(self))
+        _local.api.VarFree(byref(self))
         return out
 
 def InputVar(val):
@@ -137,7 +137,7 @@ class IAhkObject(IDispatch):
             self.prop = prop
 
         def __call__(self, *args):
-            return self.obj.Call(2, self.prop, *args)
+            return self.obj.Call(self.prop, *args)
 
         def __getitem__(self, index):
             if isinstance(index, tuple):
@@ -154,6 +154,8 @@ class IAhkObject(IDispatch):
     Property = instancemethod(Property)
 
     def Invoke(self, flags, name, *args, to_ptr=False):
+        global _ahk_throwerr
+        _ahk_throwerr = True
         result = ResultToken()
         this = ExprTokenType(self)
         l, params = len(args), None
@@ -164,7 +166,9 @@ class IAhkObject(IDispatch):
 
         rt = self.__Invoke(byref(result), flags, name, byref(this), params, l)
         if rt == 0 or rt == 8:
-            return
+            _ahk_throwerr = Exception(*_ahk_throwerr)
+            raise _ahk_throwerr
+        _ahk_throwerr = None
         if to_ptr and result.symbol == 5:
             result.symbol = 1
         return result.value
@@ -175,7 +179,7 @@ class IAhkObject(IDispatch):
             object.__setattr__(self, 'value', val if isinstance(val, int) else val.value)
             free = args[1] if l > 1 else True
             if free:
-                object.__setattr__(self, '_free', _AhkApi__local.threadid)
+                object.__setattr__(self, '_free', _local.threadid)
 
     def __call__(self, *args):              # call
         return self.Call(None, *args)
@@ -218,8 +222,19 @@ class IAhkObject(IDispatch):
             return (ret,) + outs
         return ret
 
-_AhkApi__local = __local = local()
+_local = local()
 _ahkdll = None
+_ahk_throwerr = None
+def _ahk_onerr(thr, mode):
+    global _ahk_throwerr
+    if _ahk_throwerr != True:
+        return 0
+    if isinstance(thr, IAhkObject):
+        _ahk_throwerr = (thr.Message, thr.What, thr.Extra)
+    else:
+        _ahk_throwerr = (thr,)
+    return 1
+
 class AhkApi(c_void_p):
     @classmethod
     def initialize(cls, hmod = None):
@@ -230,8 +245,9 @@ class AhkApi(c_void_p):
             _ahkdll.addScript.restype = c_void_p
             _ahkdll.addScript.argtypes = (c_wchar_p, c_int, c_uint)
             _ahkdll.ahkExec.argtypes = (c_wchar_p, c_uint)
-        __local.api = _ahkdll.ahkGetApi(None)
-        __local.threadid = get_native_id()
+        _local.api = _ahkdll.ahkGetApi(None)
+        _local.threadid = get_native_id()
+        cls['OnError'](_ahk_onerr)
 
     VarAssign = instancemethod(WINFUNCTYPE(c_bool, POINTER(Var), POINTER(ExprTokenType))(8, 'VarAssign'))
     VarToToken = instancemethod(WINFUNCTYPE(None, POINTER(Var), POINTER(ExprTokenType))(9, 'VarToToken'))
@@ -250,30 +266,30 @@ class AhkApi(c_void_p):
             return 0
         if _ := cls['OnExit']:
             _(onexit)
-        __local.api.__PumpMessages()
+        _local.api.__PumpMessages()
 
     @classmethod
     def addScript(cls, script) -> int:
-        return _ahkdll.addScript(script, 1, __local.threadid)
+        return _ahkdll.addScript(script, 1, _local.threadid)
 
     @classmethod
     def execLine(cls, pline) -> int:
-        return _ahkdll.ahkExecuteLine(c_void_p.from_param(pline), 1, 1, __local.threadid)
+        return _ahkdll.ahkExecuteLine(c_void_p.from_param(pline), 1, 1, _local.threadid)
 
     @classmethod
     def exec(cls, script) -> int:
-        return _ahkdll.ahkExec(script, __local.threadid)
+        return _ahkdll.ahkExec(script, _local.threadid)
 
     __GetVar = instancemethod(WINFUNCTYPE(c_bool, c_wchar_p, POINTER(ExprTokenType))(19, 'GetVar'))
     def __class_getitem__(cls, varname):
         token = ExprTokenType()
-        if __local.api.__GetVar(varname, byref(token)):
+        if _local.api.__GetVar(varname, byref(token)):
             return token.value
     
     __SetVar = instancemethod(WINFUNCTYPE(c_bool, c_wchar_p, POINTER(ExprTokenType))(20, 'SetVar'))
     @classmethod
     def setVar(cls, varname, value):
-        __local.api.__SetVar(varname, byref(ExprTokenType(value)))
+        _local.api.__SetVar(varname, byref(ExprTokenType(value)))
 
     @classmethod
     def _wrap_cfunc(cls, cfunc):
@@ -324,6 +340,19 @@ class AhkApi(c_void_p):
         if exit := cls['ExitApp']:
             exit(); exit = None
             cls.pumpMessages()
+
+    @classmethod
+    def loadAllFuncs(cls):
+        '''
+        docs:
+            https://lexikos.github.io/v2/docs/AutoHotkey.htm
+            https://hotkeyit.github.io/v2/docs/AutoHotkey.htm
+        '''
+        ahkfuncs = {}
+        allnames = ['Abs','ACos','Alias','ASin','ATan','BlockInput','CallbackCreate','CallbackFree','CaretGetPos','Cast','Ceil','Chr','Click','ClipWait','ComCall','ComObjActive','ComObjConnect','ComObjDll','ComObjFlags','ComObjFromPtr','ComObjGet','ComObjQuery','ComObjType','ComObjValue','ControlAddItem','ControlChooseIndex','ControlChooseString','ControlClick','ControlDeleteItem','ControlFindItem','ControlFocus','ControlGetChecked','ControlGetChoice','ControlGetClassNN','ControlGetEnabled','ControlGetExStyle','ControlGetFocus','ControlGetHwnd','ControlGetIndex','ControlGetItems','ControlGetPos','ControlGetStyle','ControlGetText','ControlGetVisible','ControlHide','ControlHideDropDown','ControlMove','ControlSend','ControlSendText','ControlSetChecked','ControlSetEnabled','ControlSetExStyle','ControlSetStyle','ControlSetText','ControlShow','ControlShowDropDown','CoordMode','Cos','Critical','CryptAES','DateAdd','DateDiff','DetectHiddenText','DetectHiddenWindows','DirCopy','DirCreate','DirDelete','DirExist','DirMove','DirSelect','DllCall','Download','DriveEject','DriveGetCapacity','DriveGetFileSystem','DriveGetLabel','DriveGetList','DriveGetSerial','DriveGetSpaceFree','DriveGetStatus','DriveGetStatusCD','DriveGetType','DriveLock','DriveRetract','DriveSetLabel','DriveUnlock','DynaCall','EditGetCurrentCol','EditGetCurrentLine','EditGetLine','EditGetLineCount','EditGetSelectedText','EditPaste','EnvGet','EnvSet','Exit','ExitApp','Exp','FileAppend','FileCopy','FileCreateShortcut','FileDelete','FileEncoding','FileExist','FileGetAttrib','FileGetShortcut','FileGetSize','FileGetTime','FileGetVersion','FileInstall','FileMove','FileOpen','FileRead','FileRecycle','FileRecycleEmpty','FileSelect','FileSetAttrib','FileSetTime','Floor','Format','FormatTime','GetKeyName','GetKeySC','GetKeyState','GetKeyVK','GetMethod','GetVar','GroupActivate','GroupAdd','GroupClose','GroupDeactivate','GuiCtrlFromHwnd','GuiFromHwnd','HasBase','HasMethod','HasProp','HotIf','HotIfWinActive','HotIfWinExist','HotIfWinNotActive','HotIfWinNotExist','Hotkey','Hotstring','IL_Add','IL_Create','IL_Destroy','ImageSearch','IniDelete','IniRead','IniWrite','InputBox','InstallKeybdHook','InstallMouseHook','InStr','IsAlnum','IsAlpha','IsDate','IsDigit','IsFloat','IsInteger','IsLabel','IsLower','IsNumber','IsObject','IsSet','IsSetRef','IsSpace','IsTime','IsUpper','IsXDigit','KeyHistory','KeyWait','ListLines','ListViewGetContent','Ln','LoadPicture','Log','LTrim','Max','MemoryCallEntryPoint','MemoryFindResource','MemoryFreeLibrary','MemoryGetProcAddress','MemoryLoadLibrary','MemoryLoadResource','MemoryLoadString','MemorySizeOfResource','MenuFromHandle','MenuSelect','Min','Mod','MonitorGet','MonitorGetCount','MonitorGetName','MonitorGetPrimary','MonitorGetWorkArea','MouseClick','MouseClickDrag','MouseGetPos','MouseMove','MsgBox','NumGet','NumPut','ObjAddRef','ObjBindMethod','ObjDump','ObjFromPtr','ObjFromPtrAddRef','ObjGetBase','ObjGetCapacity','ObjHasOwnProp','ObjLoad','ObjOwnPropCount','ObjOwnProps','ObjPtr','ObjPtrAddRef','ObjRelease','ObjSetBase','ObjSetCapacity','OnClipboardChange','OnError','OnExit','OnMessage','Ord','OutputDebug','Pause','Persistent','PixelGetColor','PixelSearch','PostMessage','ProcessClose','ProcessExist','ProcessSetPriority','ProcessWait','ProcessWaitClose','Random','RegDelete','RegDeleteKey','RegExMatch','RegExReplace','RegRead','RegWrite','Reload','ResourceLoadLibrary','Round','RTrim','Run','RunAs','RunWait','Send','SendEvent','SendInput','SendLevel','SendMessage','SendMode','SendPlay','SendRaw','SendText','SetCapsLockState','SetControlDelay','SetDefaultMouseSpeed','SetKeyDelay','SetMouseDelay','SetNumLockState','SetRegView','SetScrollLockState','SetStoreCapsLockMode','SetTimer','SetTitleMatchMode','SetWinDelay','SetWorkingDir','Shutdown','Sin','sizeof','Sleep','Sort','SoundBeep','SoundGetInterface','SoundGetMute','SoundGetName','SoundGetVolume','SoundPlay','SoundSetMute','SoundSetVolume','SplitPath','Sqrt','StatusBarGetText','StatusBarWait','StrCompare','StrGet','StrLen','StrLower','StrPtr','StrPut','StrReplace','StrSplit','StrTitle','StrUpper','SubStr','Suspend','Swap','SysGet','SysGetIPAddresses','Tan','Thread','ToolTip','TraySetIcon','TrayTip','Trim','Type','UArray','UMap','UnZip','UnZipBuffer','UnZipRawMemory','UObject','VarSetStrCapacity','VerCompare','WinActivate','WinActivateBottom','WinActive','WinClose','WinExist','WinGetClass','WinGetClientPos','WinGetControls','WinGetControlsHwnd','WinGetCount','WinGetExStyle','WinGetID','WinGetIDLast','WinGetList','WinGetMinMax','WinGetPID','WinGetPos','WinGetProcessName','WinGetProcessPath','WinGetStyle','WinGetText','WinGetTitle','WinGetTransColor','WinGetTransparent','WinHide','WinKill','WinMaximize','WinMinimize','WinMove','WinMoveBottom','WinMoveTop','WinRedraw','WinRestore','WinSetAlwaysOnTop','WinSetEnabled','WinSetExStyle','WinSetRegion','WinSetStyle','WinSetTitle','WinSetTransColor','WinSetTransparent','WinShow','WinWait','WinWaitActive','WinWaitClose','WinWaitNotActive','ZipAddBuffer','ZipAddFile','ZipAddFolder','ZipCloseBuffer','ZipCloseFile','ZipCreateBuffer','ZipCreateFile','ZipInfo','ZipOptions','ZipRawMemory',]
+        for n in allnames:
+            ahkfuncs[n] = cls[n]
+        return ahkfuncs
 
 def VARIANT_value_getter(self, _VARIANT_value_getter = VARIANT.value.fget):
     if self.vt == 9:
