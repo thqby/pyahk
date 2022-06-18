@@ -1,6 +1,6 @@
 # Use AutoHotkey V2 in Python
 
-## examples
+## example1 Gui, Hotkey ...
 ```python
 from ctypes import c_wchar_p
 from pyahk import *
@@ -36,4 +36,25 @@ Hotkey('F7', onf7)	# use CFuncType callback
 
 # ahk's message pump, block until the AHK interpreter exits
 AhkApi.pumpMessages()
+```
+
+## example2 ahk's VarRef
+```python
+from pyahk import *
+
+AhkApi.initialize()	# init ahk
+AhkApi.addScript('''
+mul(&v) {
+	v := v * v
+	return v
+}
+''')
+
+from pyahk import MouseGetPos, mul
+
+print(MouseGetPos(Var(), Var(), Var(), Var()))
+print(mul(InputVar(32)), mul(Var(32)))
+
+# exit AHK interpreter
+AhkApi.finalize()
 ```

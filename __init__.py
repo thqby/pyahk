@@ -1,7 +1,39 @@
 from .comproxy import *
-from ctypes import CDLL, POINTER, WINFUNCTYPE, _CFuncPtr, _FUNCFLAG_CDECL, Structure, Union, byref, c_bool, c_double, c_int
+from ctypes import CDLL, POINTER, WINFUNCTYPE, _CFuncPtr, _FUNCFLAG_CDECL, Structure, Union, addressof, byref, c_bool, c_double, c_int, c_ubyte
 from ctypes import c_int64, c_size_t, c_uint, c_void_p, c_wchar_p, cast, create_unicode_buffer, pointer, py_object, pythonapi
 from threading import get_native_id, local
+
+__all__ = ['AhkApi', 'IAhkObject', 'WINFUNCTYPE', 'Var', 'InputVar']
+
+class Var(Structure):
+    _fields_ = (('Contents', c_int64),
+                ('CharContents', c_wchar_p),
+                ('ByteLength', c_size_t),
+                ('ByteCapacity', c_size_t),
+                ('HowAllocated', c_ubyte),
+                ('Attrib', c_ubyte),
+                ('Scope', c_ubyte),
+                ('Type', c_ubyte),
+                ('Name', c_wchar_p))
+    _out = True
+    def __init__(self, val = 0):
+        self.Name = ''
+        self.Type = 1
+        self.Attrib = 0x11
+        if val:
+            _AhkApi__local.api.VarAssign(byref(self), byref(ExprTokenType(val)))
+
+    def _output(self):
+        if out := self._out:
+            _AhkApi__local.api.VarToToken(byref(self), byref(tk := ExprTokenType()))
+            self.value = tk.value
+        _AhkApi__local.api.VarFree(byref(self))
+        return out
+
+def InputVar(val):
+    val = Var(val)
+    val._out = False
+    return val
 
 class ExprTokenType(Structure):
     class _V(Union):
@@ -69,14 +101,24 @@ class ExprTokenType(Structure):
                 self.symbol = 2
             elif val == None:
                 self.symbol = 3
+            elif isinstance(val, Var):
+                self.object = addressof(val)
+                self.symbol = 4
+                self.marker_length = 4
             else:
                 self.object = self._objcache = AhkApi._wrap_pyobj(val)
                 self.symbol = 5
 
+BUF256 = create_unicode_buffer(256)
 class ResultToken(Structure):
-    _fields_ = (('_', ExprTokenType), ('buf', c_wchar_p), ('mem_to_free', c_void_p), ('func', c_void_p), ('result', c_int))
+    _fields_ = (('_', ExprTokenType), ('buf', c_void_p), ('mem_to_free', c_void_p), ('func', c_void_p), ('result', c_int))
     _anonymous_ = ('_',)
     value = ExprTokenType.value
+
+    def __init__(self):
+        self.value = ''
+        self.result = 1
+        self.buf = addressof(BUF256)
 
     def __del__(self):
         if self.symbol == 5:
@@ -95,7 +137,7 @@ class IAhkObject(IDispatch):
             self.prop = prop
 
         def __call__(self, *args):
-            return self.obj.Invoke(2, self.prop, *args)
+            return self.obj.Call(2, self.prop, *args)
 
         def __getitem__(self, index):
             if isinstance(index, tuple):
@@ -113,10 +155,6 @@ class IAhkObject(IDispatch):
 
     def Invoke(self, flags, name, *args, to_ptr=False):
         result = ResultToken()
-        result.value = ''
-        result.result = 1
-        buf = create_unicode_buffer(256)
-        result.buf = cast(buf, c_wchar_p)
         this = ExprTokenType(self)
         l, params = len(args), None
         if l:
@@ -140,7 +178,7 @@ class IAhkObject(IDispatch):
                 object.__setattr__(self, '_free', _AhkApi__local.threadid)
 
     def __call__(self, *args):              # call
-        return self.Invoke(2, None, *args)
+        return self.Call(None, *args)
 
     def __getitem__(self, index):           # __item.get
         if isinstance(index, tuple):
@@ -167,22 +205,38 @@ class IAhkObject(IDispatch):
     def __iter__(self):
         raise NotImplementedError
 
-    def get(self, prop, *args):             # prop.get
+    def Get(self, prop, *args):             # prop.get
         return self.Invoke(0, prop, *args)
 
-    def set(self, prop, value, *args):      # prop.set
+    def Set(self, prop, value, *args):      # prop.set
         return self.Invoke(1, prop, value, *args)
 
-    def call(self, prop, *args):            # prop.call
-        return self.Invoke(2, prop, *args)
+    def Call(self, prop, *args):            # prop.call
+        ret = self.Invoke(2, prop, *args)
+        outs = tuple(arg.value for arg in args if isinstance(arg, Var) and arg._output())
+        if outs:
+            return (ret,) + outs
+        return ret
 
 _AhkApi__local = __local = local()
+_ahkdll = None
 class AhkApi(c_void_p):
     @classmethod
-    def initialize(cls, papi = None):
-        __local.api = papi or _ahkdll.ahkGetApi(None)
+    def initialize(cls, hmod = None):
+        global _ahkdll
+        if _ahkdll is None:
+            _ahkdll = CDLL(__file__ + '/../AutoHotkey.dll', handle=hmod)
+            _ahkdll.ahkGetApi.restype = AhkApi
+            _ahkdll.addScript.restype = c_void_p
+            _ahkdll.addScript.argtypes = (c_wchar_p, c_int, c_uint)
+            _ahkdll.ahkExec.argtypes = (c_wchar_p, c_uint)
+        __local.api = _ahkdll.ahkGetApi(None)
         __local.threadid = get_native_id()
-    
+
+    VarAssign = instancemethod(WINFUNCTYPE(c_bool, POINTER(Var), POINTER(ExprTokenType))(8, 'VarAssign'))
+    VarToToken = instancemethod(WINFUNCTYPE(None, POINTER(Var), POINTER(ExprTokenType))(9, 'VarToToken'))
+    VarFree = instancemethod(WINFUNCTYPE(None, POINTER(Var))(10, 'VarFree'))
+
     __PumpMessages = instancemethod(WINFUNCTYPE(None)(45, 'PumpMessages'))
     @classmethod
     def pumpMessages(cls):
@@ -287,10 +341,3 @@ def __getattr__(name):
     if symbol is None:
         raise AttributeError
     return symbol
-
-_ahkdll = CDLL(__file__ + '/../AutoHotkey.dll')
-_ahkdll.ahkGetApi.restype = AhkApi
-_ahkdll.addScript.restype = c_void_p
-_ahkdll.addScript.argtypes = (c_wchar_p, c_int, c_uint)
-_ahkdll.ahkExec.argtypes = (c_wchar_p, c_uint)
-__all__ = ['AhkApi', 'IAhkObject', 'WINFUNCTYPE']
