@@ -1,6 +1,7 @@
-# Use AutoHotkey V2 in Python
+# Python and AutoHotkey V2 call each other, ctypes implementation
 
-## example1 Gui, Hotkey ...
+## Use AutoHotkey V2 in Python
+#### example1 Gui, Hotkey ...
 ```python
 from ctypes import c_wchar_p
 from pyahk import *
@@ -38,7 +39,7 @@ Hotkey('F7', onf7)	# use CFuncType callback
 AhkApi.pumpMessages()
 ```
 
-## example2 ahk's VarRef
+#### example2 ahk's VarRef
 ```python
 from pyahk import *
 
@@ -57,4 +58,27 @@ print(mul(InputVar(32)), mul(Var(32)))
 
 # exit AHK interpreter
 AhkApi.finalize()
+```
+
+## Use Python in AutoHotkey V2
+```ahk
+py := Python()
+; import py's lib
+; stdout := py.__import__('sys').stdout
+py.exec('from sys import stdout')
+ahk_arr := [213,4,'das',423.24,'fdg']
+; ahk array to py list
+; v2h.exe, IObject interface
+; py.print(ahk_arr, l := py.list(ahk_arr))	; <IAhkObject object at 0x...> [213, 4, 'das', 423.24, 'fdg']
+
+; v2l.exe, IDispatch interface
+l := py.list()
+for it in ahk_arr
+	l.append(it)
+py.print(ahk_arr, l)						; <pyahk.comproxy.Dispatch object at 0x...> [213, 4, 'das', 423.24, 'fdg']
+
+py.stdout.flush()
+; py list to ahk array
+arr := [l*]
+l := 0
 ```

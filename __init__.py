@@ -166,8 +166,9 @@ class IAhkObject(IDispatch):
 
         rt = self.__Invoke(byref(result), flags, name, byref(this), params, l)
         if rt == 0 or rt == 8:
-            _ahk_throwerr = Exception(*_ahk_throwerr)
-            raise _ahk_throwerr
+            if _ahk_throwerr != True:
+                _ahk_throwerr = Exception(*_ahk_throwerr)
+                raise _ahk_throwerr
         _ahk_throwerr = None
         if to_ptr and result.symbol == 5:
             result.symbol = 1
@@ -207,7 +208,17 @@ class IAhkObject(IDispatch):
         self.Invoke(1, prop, value)
 
     def __iter__(self):
-        raise NotImplementedError
+        if not self.Invoke(2, 'HasProp', '__Enum'):
+            raise NotImplementedError
+        r = self.Invoke(2, '__Enum', 1)
+        object.__setattr__(r, '_free', 0)
+        class _Enum(IAhkObject):
+            def __next__(self):
+                r, v = self.Call(None, Var())
+                if r:
+                    return v
+                else: raise StopIteration
+        return _Enum(r.value)
 
     def Get(self, prop, *args):             # prop.get
         return self.Invoke(0, prop, *args)
@@ -240,32 +251,37 @@ class AhkApi(c_void_p):
     def initialize(cls, hmod = None):
         global _ahkdll
         if _ahkdll is None:
-            _ahkdll = CDLL(__file__ + '/../AutoHotkey.dll', handle=hmod)
+            dllpath = __file__ + '/../AutoHotkey.dll'
+            if isinstance(hmod, str):
+                dllpath, hmod = hmod, None
+            _ahkdll = CDLL(dllpath, handle=hmod)
             _ahkdll.ahkGetApi.restype = AhkApi
             _ahkdll.addScript.restype = c_void_p
             _ahkdll.addScript.argtypes = (c_wchar_p, c_int, c_uint)
             _ahkdll.ahkExec.argtypes = (c_wchar_p, c_uint)
         _local.api = _ahkdll.ahkGetApi(None)
         _local.threadid = get_native_id()
-        cls['OnError'](_ahk_onerr)
+        if hmod is None:
+            cls['OnError'](_ahk_onerr)
 
     VarAssign = instancemethod(WINFUNCTYPE(c_bool, POINTER(Var), POINTER(ExprTokenType))(8, 'VarAssign'))
     VarToToken = instancemethod(WINFUNCTYPE(None, POINTER(Var), POINTER(ExprTokenType))(9, 'VarToToken'))
     VarFree = instancemethod(WINFUNCTYPE(None, POINTER(Var))(10, 'VarFree'))
 
+    @staticmethod
+    @WINFUNCTYPE(c_int, c_wchar_p, c_int)
+    def __onexit(reason, code):
+        from gc import get_objects
+        threadid = get_native_id()
+        for obj in filter(lambda obj: isinstance(obj, IAhkObject) and obj._free == threadid, get_objects()):
+            obj.Release()
+            object.__setattr__(obj, '_free', 0)
+        return 0
     __PumpMessages = instancemethod(WINFUNCTYPE(None)(45, 'PumpMessages'))
     @classmethod
     def pumpMessages(cls):
-        @WINFUNCTYPE(c_int, c_wchar_p, c_int)
-        def onexit(reason, code):
-            from gc import get_objects
-            threadid = get_native_id()
-            for obj in filter(lambda obj: isinstance(obj, IAhkObject) and obj._free == threadid, get_objects()):
-                obj.Release()
-                object.__setattr__(obj, '_free', 0)
-            return 0
         if _ := cls['OnExit']:
-            _(onexit)
+            _(cls.__onexit)
         _local.api.__PumpMessages()
 
     @classmethod

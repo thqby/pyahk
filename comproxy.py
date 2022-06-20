@@ -148,7 +148,7 @@ class ComProxy(Structure):
             obj = py_object.from_address(this + PTR_SIZE).value
             params = pDispParams[0]
             args = tuple(params.rgvarg[i].value for i in range(params.cArgs)[::-1])
-
+            excep = pExcepInfo[0]
             try:
                 if dispIdMember == 0:
                     if (wFlags & 1) and callable(obj):
@@ -176,11 +176,34 @@ class ComProxy(Structure):
                             else: return -2147352573
                         else:
                             if wFlags & 2:
-                                pVarResult[0].value = obj
+                                if args:
+                                    pVarResult[0].value = obj[args[0] if len(args) == 1 else args]
+                                else: pVarResult[0].value = obj
                             else: return -2147352573
+                elif dispIdMember == -4:
+                    if hasattr(obj, '__iter__'):
+                        class _Enum:
+                            __slots__ = ('obj',)
+                            def __init__(self, obj):
+                                self.obj = iter(obj)
+                            def __call__(self, *args):
+                                try:
+                                    v = self.obj.__next__()
+                                    l = len(args)
+                                    if l == 1:
+                                        args[0][0] = v
+                                    else:
+                                        for i in range(l):
+                                            args[i][0] = v[i]
+                                    return 1
+                                except:
+                                    return 0
+                        pVarResult[0].value = ComProxy(_Enum(obj)).as_IDispatch()
+                    else:
+                        excep.scode = -2147352573
+                        return -2147352573
                 else: return -2147352573
             except:
-                excep = pExcepInfo[0]
                 typ, value, tb = exc_info()
                 excep.scode = -2147352567
                 if value.args:
@@ -260,7 +283,7 @@ class VARIANT(Structure):
         if not self.vt & VT_BYREF:
             raise TypeError("set_byref requires a VT_BYREF VARIANT instance")
         typ = _vartype_to_ctype[self.vt & ~VT_BYREF]
-        cast(self.c_void_p, POINTER(typ))[0] = value
+        cast(self.c_void_p, POINTER(typ))[0].value = value
 
     @property
     def value(self):
