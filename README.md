@@ -8,12 +8,14 @@ from pyahk import *
 
 AhkApi.initialize()	# init ahk
 AhkApi.addScript('''
+; show tray icon
 A_IconHidden:=0
 f4::exitapp
+#HotIf WinActive('ahk_exe notepad.exe')
 ''')
 
 # import ahk's global vars, or AhkApi[varname]
-from pyahk import Gui, MsgBox, FileAppend, Array, Map, JSON, Hotkey
+from pyahk import Gui, MsgBox, FileAppend, Array, Map, JSON, Hotkey, HotIf, WinActive
 
 def onbutton(ob, inf):
 	v = ob.Gui['Edit1'].Value
@@ -32,8 +34,14 @@ def onf6(key):
 @WINFUNCTYPE(None, c_wchar_p)
 def onf7(key):
 	MsgBox(key)
+
+# Take effect under this condition
+HotIf(lambda key: WinActive(g.hwnd))
 Hotkey('F6', onf6)	# use ComProxy callback
+# Use an existing conditional expression in ahk
+HotIf("WinActive('ahk_exe notepad.exe')")
 Hotkey('F7', onf7)	# use CFuncType callback
+HotIf()
 
 # ahk's message pump, block until the AHK interpreter exits
 AhkApi.pumpMessages()
