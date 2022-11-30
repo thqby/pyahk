@@ -8,7 +8,8 @@ class Python {
 		DllCall(addr('Py_Initialize'))
 		if !DllCall(addr('Py_IsInitialized'))
 			throw 'py is not initialized'
-		this.DefineProp('__Delete', {call: ((add, self) => (Python.__instance__ := 0, DllCall(add))).Bind(addr('Py_Finalize'))})
+		Py_Finalize := addr('Py_Finalize')
+		this.DefineProp('__Delete', {call: (self) => (self.__instance__ := 0, DllCall(Py_Finalize))})
 		pyscript :=
 		(
 			'from builtins import *`n__import__ = __import__`n'
@@ -41,9 +42,9 @@ class Python {
 		return this.__instance__ := ComObjFromPtr(NumGet(buf, 'ptr'))
 		addr(f) => DllCall('GetProcAddress', 'ptr', mod, 'astr', f, 'ptr')
 	}
-	; __Call(name, params)			; call `__main__`'s global var
-	; __Get(name, params)			; get `__main__`'s global var
-	; __Set(name, params, value)	; set `__main__`'s global var
-	; exec(code, globals, locals)
-	; eval(code, globals, locals)
+	; __Call(name, params) => any			; call `__main__`'s global var
+	; __Get(name, params) => any			; get  `__main__`'s global var
+	; __Set(name, params, value) => void	; set  `__main__`'s global var
+	; exec(code, globals, locals) => void
+	; eval(code, globals, locals) => any
 }

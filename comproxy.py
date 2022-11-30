@@ -148,7 +148,7 @@ class ComProxy(Structure):
             obj = py_object.from_address(this + PTR_SIZE).value
             params = pDispParams[0]
             args = tuple(params.rgvarg[i].value for i in range(params.cArgs)[::-1])
-            excep = pExcepInfo[0]
+            excep = pExcepInfo[0] if pExcepInfo else EXCEPINFO()
             try:
                 if dispIdMember == 0:
                     if (wFlags & 1) and callable(obj):

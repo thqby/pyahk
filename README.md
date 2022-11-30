@@ -1,5 +1,12 @@
 # Python and AutoHotkey V2 call each other, ctypes implementation
 
+## The installation
+- [Download ZIP](https://github.com/thqby/vscode-autohotkey2-lsp/archive/refs/heads/main.zip)
+- Unzip to `Python folder\Lib\site-packages\pyahk`
+- Updating [latest AutoHotkey.dll file](https://github.com/thqby/AutoHotkey_H/releases/latest), choose between 32-bit or 64-bit dll depending on the version of python you have installed
+- If using in ahk, copy `py4ahk.ahk` into the lib folder of ahk
+
+
 ## Use AutoHotkey V2 in Python
 #### example1 Gui, Hotkey ...
 ```python
@@ -69,12 +76,10 @@ AhkApi.finalize()
 ```
 
 ## Use Python in AutoHotkey V2
-before use, you should do as following:
-1. move `__init__.py`, `comproxy.py` to `python\lib\pyahk` folder
-2. modify `dllpath` in 3 line of `py4ahk.ahk`.
 
 ```ahk
-py := Python()
+dllpath := ''	; set the path to your python.dll, the default is 'python39.dll'
+py := Python(dllpath)
 ; import py's lib
 ; stdout := py.__import__('sys').stdout
 py.exec('from sys import stdout')
