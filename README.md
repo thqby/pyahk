@@ -69,6 +69,10 @@ AhkApi.finalize()
 ```
 
 ## Use Python in AutoHotkey V2
+before use, you should do as following:
+1. move `__init__.py`, `comproxy.py` to `python\lib\pyahk` folder
+2. modify `dllpath` in 3 line of `py4ahk.ahk`.
+
 ```ahk
 py := Python()
 ; import py's lib
