@@ -1,7 +1,7 @@
 # Python and AutoHotkey V2 call each other, ctypes implementation
 
 ## The installation
-- [Download ZIP](https://github.com/thqby/vscode-autohotkey2-lsp/archive/refs/heads/main.zip)
+- [Download ZIP](https://github.com/thqby/pyahk/archive/refs/heads/main.zip)
 - Unzip to `Python folder\Lib\site-packages\pyahk`
 - Updating [latest AutoHotkey.dll file](https://github.com/thqby/AutoHotkey_H/releases/latest), choose between 32-bit or 64-bit dll depending on the version of python you have installed
 - If using in ahk, copy `py4ahk.ahk` into the lib folder of ahk
