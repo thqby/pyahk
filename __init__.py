@@ -1,6 +1,6 @@
 from .comproxy import *
 from ctypes import CDLL, POINTER, WINFUNCTYPE, _CFuncPtr, _FUNCFLAG_CDECL, Structure, Union, addressof, byref, c_bool, c_double, c_int, c_ubyte
-from ctypes import c_int64, c_size_t, c_uint, c_void_p, c_wchar_p, cast, create_unicode_buffer, pointer, py_object, pythonapi
+from ctypes import c_int64, c_size_t, c_uint, c_void_p, c_wchar_p, cast, create_unicode_buffer, pointer, py_object, wstring_at
 from threading import get_native_id, local
 
 __all__ = ['AhkApi', 'IAhkObject', 'WINFUNCTYPE', 'Var', 'InputVar']
@@ -16,19 +16,26 @@ class Var(Structure):
                 ('Type', c_ubyte),
                 ('Name', c_wchar_p))
     _out = True
-    def __init__(self, val = 0):
+    def __init__(self, val = None):
         self.Name = ''
         self.Type = 1
-        self.Attrib = 0x11
-        if val:
+        self.Attrib = 2
+        if val != None:
             _local.api.VarAssign(byref(self), byref(ExprTokenType(val)))
 
-    def _output(self):
-        if out := self._out:
-            _local.api.VarToToken(byref(self), byref(tk := ExprTokenType()))
-            self.value = tk.value
-        _local.api.VarFree(byref(self))
-        return out
+    def __del__(self):
+        if not (self.Attrib & 2):
+            self.free()
+
+    def free(self):
+        _local.api.VarFree(byref(self), 13)
+
+    @property
+    def value(self):
+        _local.api.VarToToken(byref(self), byref(TTK))
+        v = TTK.value
+        TTK.free()
+        return v
 
 def InputVar(val):
     val = Var(val)
@@ -36,20 +43,13 @@ def InputVar(val):
     return val
 
 class ExprTokenType(Structure):
-    class _V(Union):
+    class _(Union):
         class _(Structure):
-            class _u1(Union):
-                _fields_ = (('object', c_void_p), ('marker', c_wchar_p))
-            class _u2(Union):
-                _fields_ = (('marker_length', c_size_t), ('var_usage', c_int))
-            _fields_ = (('_u1', _u1), ('_u2', _u2))
-            _anonymous_ = ('_u1', '_u2')
-        _fields_ = (('value_int64', c_int64),
-                    ('value_double', c_double),
-                    ('_', _))
+            _fields_ = (('ptr', c_void_p), ('length', c_size_t))
+        _fields_ = (('int64', c_int64), ('double', c_double), ('_', _))
         _anonymous_ = ('_',)
-    _fields_ = (('v', _V), ('symbol', c_int))
-    _anonymous_ = ('v',)
+    _fields_ = (('_', _), ('symbol', c_int))
+    _anonymous_ = ('_',)
 
     def __init__(self, *val):
         if val:
@@ -59,23 +59,23 @@ class ExprTokenType(Structure):
     def value(self):
         symbol = self.symbol
         if symbol == 1:
-            return self.value_int64
+            return self.int64
         elif symbol == 2:
-            return self.value_double
+            return self.double
         elif symbol == 0:
-            return self.marker
+            return wstring_at(self.ptr)
         elif symbol == 5:
-            obj = IAhkObject(self.object)
+            obj = IAhkObject(self.ptr)
             obj.AddRef()
             if obj.Type() == 'ComObject':
-                pdisp = IDispatch.from_address(self.object + PTR_SIZE * 2)
+                pdisp = IDispatch.from_address(self.ptr + PTR_SIZE * 2)
                 pdisp._free = True
                 try:
                     pdisp.QueryInterface(IID_PYOBJECT)
                     return py_object.from_address(pdisp.value + PTR_SIZE).value
                 except:
                     try:
-                        pdisp.QueryInterface(IID_IAhkObject)
+                        pdisp.QueryInterface(IID_AHKOBJECT)
                         pdisp._free = False
                         return IAhkObject(pdisp)
                     except:
@@ -86,49 +86,45 @@ class ExprTokenType(Structure):
     @value.setter
     def value(self, val):
         if isinstance(val, str):
-            self.marker = val
-            self.marker_length = len(val)
+            self._objcache = val = create_unicode_buffer(val)
+            self.ptr = addressof(val)
+            self.length = len(val) - 1
             self.symbol = 0
         else:
-            self.marker_length = 0
+            self.length = 0
             if isinstance(val, int):
-                self.value_int64 = val
-                if self.value_int64 == val:
+                self.int64 = val
+                if self.int64 == val:
                     self.symbol = 1
                 else: self.value = str(val)
             elif isinstance(val, float):
-                self.value_double = val
+                self.double = val
                 self.symbol = 2
             elif val == None:
                 self.symbol = 3
             elif isinstance(val, Var):
-                self.object = addressof(val)
+                self.ptr = addressof(val)
                 self.symbol = 4
-                self.marker_length = 4
+                self.length = 4
             else:
-                self.object = self._objcache = AhkApi._wrap_pyobj(val)
+                self.ptr = self._objcache = AhkApi._wrap_pyobj(val)
                 self.symbol = 5
 
+BUF1 = create_unicode_buffer(1)
 BUF256 = create_unicode_buffer(256)
-class ResultToken(Structure):
-    _fields_ = (('_', ExprTokenType), ('buf', c_void_p), ('mem_to_free', c_void_p), ('func', c_void_p), ('result', c_int))
-    _anonymous_ = ('_',)
-    value = ExprTokenType.value
+class ResultToken(ExprTokenType):
+    _fields_ = (('buf', c_void_p), ('mem_to_free', c_void_p), ('func', c_void_p), ('result', c_int))
 
     def __init__(self):
         self.value = ''
         self.result = 1
         self.buf = addressof(BUF256)
 
-    def __del__(self):
-        if self.symbol == 5:
-            IDispatch(self.object)
-            self.symbol = 1
-        elif self.mem_to_free:
-            pythonapi.PyMem_RawFree(c_void_p(self.mem_to_free))
-            self.mem_to_free = None
+    def free(self):
+        _local.api.ResultTokenFree(byref(self))
 
-IID_IAhkObject = GUID("{619f7e25-6d89-4eb4-b2fb-18e7c73c0ea6}")
+TTK = ResultToken()
+IID_AHKOBJECT = GUID("{619f7e25-6d89-4eb4-b2fb-18e7c73c0ea6}")
 class IAhkObject(IDispatch):
     class Property:
         __slots__ = ('obj', 'prop')
@@ -149,8 +145,8 @@ class IAhkObject(IDispatch):
                 return self.obj.Invoke(1, self.prop, value, *index)
             return self.obj.Invoke(1, self.prop, value, index)
 
-    __Invoke = instancemethod(WINFUNCTYPE(c_int, POINTER(ResultToken), c_int, c_wchar_p, POINTER(ExprTokenType), POINTER(POINTER(ExprTokenType)), c_int)(7, 'Invoke', iid=IID_IAhkObject))
-    Type = instancemethod(WINFUNCTYPE(c_wchar_p)(8, 'Type', iid=IID_IAhkObject))
+    __Invoke = instancemethod(WINFUNCTYPE(c_int, POINTER(ResultToken), c_int, c_wchar_p, POINTER(ExprTokenType), POINTER(POINTER(ExprTokenType)), c_int)(7, 'Invoke', iid=IID_AHKOBJECT))
+    Type = instancemethod(WINFUNCTYPE(c_wchar_p)(8, 'Type', iid=IID_AHKOBJECT))
     Property = instancemethod(Property)
 
     def Invoke(self, flags, name, *args, to_ptr=False):
@@ -169,10 +165,15 @@ class IAhkObject(IDispatch):
             if _ahk_throwerr != True:
                 _ahk_throwerr = Exception(*_ahk_throwerr)
                 raise _ahk_throwerr
+            return None
+        if rt == 4:
+            return None
         _ahk_throwerr = None
         if to_ptr and result.symbol == 5:
             result.symbol = 1
-        return result.value
+        v = result.value
+        result.free()
+        return v
 
     def __init__(self, *args):
         if l := len(args):
@@ -208,16 +209,17 @@ class IAhkObject(IDispatch):
         self.Invoke(1, prop, value)
 
     def __iter__(self):
-        if not self.Invoke(2, 'HasProp', '__Enum'):
-            raise NotImplementedError
         r = self.Invoke(2, '__Enum', 1)
+        if r == None:
+            raise NotImplementedError
         object.__setattr__(r, '_free', 0)
+        var = Var()
         class _Enum(IAhkObject):
             def __next__(self):
-                r, v = self.Call(None, Var())
-                if r:
-                    return v
-                else: raise StopIteration
+                if _local.api.CallEnumerator(self.value, pointer(pointer(ExprTokenType(var))), 1):
+                    return var.value
+                var.free()
+                raise StopIteration
         return _Enum(r.value)
 
     def Get(self, prop, *args):             # prop.get
@@ -228,7 +230,7 @@ class IAhkObject(IDispatch):
 
     def Call(self, prop, *args):            # prop.call
         ret = self.Invoke(2, prop, *args)
-        outs = tuple(arg.value for arg in args if isinstance(arg, Var) and arg._output())
+        outs = tuple(arg.value for arg in args if isinstance(arg, Var) and arg._out)
         if outs:
             return (ret,) + outs
         return ret
@@ -246,10 +248,14 @@ def _ahk_onerr(thr, mode):
         _ahk_throwerr = (thr,)
     return 1
 
+def _TTK_INIT():
+    TTK.ptr = addressof(BUF1)
+    TTK.symbol = 0
+
 class AhkApi(c_void_p):
     @classmethod
     def initialize(cls, hmod = None):
-        global _ahkdll
+        global _ahkdll, IID_AHKOBJECT
         if _ahkdll is None:
             dllpath = __file__ + '/../AutoHotkey.dll'
             if isinstance(hmod, str):
@@ -259,14 +265,22 @@ class AhkApi(c_void_p):
             _ahkdll.addScript.restype = c_void_p
             _ahkdll.addScript.argtypes = (c_wchar_p, c_int, c_uint)
             _ahkdll.ahkExec.argtypes = (c_wchar_p, c_uint)
+            try:
+                IID_AHKOBJECT = GUID.from_address(cast(_ahkdll.IID_IObjectComCompatible, c_void_p).value)
+            except:
+                pass
         _local.api = _ahkdll.ahkGetApi(None)
         _local.threadid = get_native_id()
+        if cls['A_AhkVersion'].startswith('2.0'):
+            TTK.free = _TTK_INIT
         if hmod is None:
             cls['OnError'](_ahk_onerr)
 
     VarAssign = instancemethod(WINFUNCTYPE(c_bool, POINTER(Var), POINTER(ExprTokenType))(8, 'VarAssign'))
-    VarToToken = instancemethod(WINFUNCTYPE(None, POINTER(Var), POINTER(ExprTokenType))(9, 'VarToToken'))
-    VarFree = instancemethod(WINFUNCTYPE(None, POINTER(Var))(10, 'VarFree'))
+    VarToToken = instancemethod(WINFUNCTYPE(None, POINTER(Var), POINTER(ResultToken))(9, 'VarToToken'))
+    VarFree = instancemethod(WINFUNCTYPE(None, POINTER(Var), c_int)(10, 'VarFree'))
+    ResultTokenFree = instancemethod(WINFUNCTYPE(None, POINTER(ResultToken))(14, 'ResultTokenFree'))
+    CallEnumerator = instancemethod(WINFUNCTYPE(c_bool, c_void_p, POINTER(POINTER(ExprTokenType)), c_int)(25, 'CallEnumerator'))
 
     @staticmethod
     @WINFUNCTYPE(c_int, c_wchar_p, c_int)
@@ -296,11 +310,12 @@ class AhkApi(c_void_p):
     def exec(cls, script) -> int:
         return _ahkdll.ahkExec(script, _local.threadid)
 
-    __GetVar = instancemethod(WINFUNCTYPE(c_bool, c_wchar_p, POINTER(ExprTokenType))(19, 'GetVar'))
+    __GetVar = instancemethod(WINFUNCTYPE(c_bool, c_wchar_p, POINTER(ResultToken))(19, 'GetVar'))
     def __class_getitem__(cls, varname):
-        token = ExprTokenType()
-        if _local.api.__GetVar(varname, byref(token)):
-            return token.value
+        if _local.api.__GetVar(varname, byref(TTK)):
+            v = TTK.value
+            TTK.free()
+            return v
     
     __SetVar = instancemethod(WINFUNCTYPE(c_bool, c_wchar_p, POINTER(ExprTokenType))(20, 'SetVar'))
     @classmethod
@@ -374,7 +389,7 @@ def VARIANT_value_getter(self, _VARIANT_value_getter = VARIANT.value.fget):
     if self.vt == 9:
         try:
             val = self.c_void_p
-            IDispatch.QueryInterface(c_void_p(val), IID_IAhkObject)
+            IDispatch.QueryInterface(c_void_p(val), IID_AHKOBJECT)
             return IAhkObject(val)
         except:
             pass

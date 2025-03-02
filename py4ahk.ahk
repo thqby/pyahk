@@ -7,7 +7,7 @@ class Python {
 			throw OSError()
 		DllCall(addr('Py_Initialize'))
 		if !DllCall(addr('Py_IsInitialized'))
-			throw 'py is not initialized'
+			throw Error('py is not initialized')
 		Py_Finalize := addr('Py_Finalize')
 		this.DefineProp('__Delete', {call: (self) => (self.__instance__ := 0, DllCall(Py_Finalize))})
 		pyscript :=
@@ -38,7 +38,8 @@ class Python {
 			v2hext := 'from pyahk import AhkApi; AhkApi.initialize(cast(' ahk_mod ', c_void_p).value); AhkApi.pumpMessages()'
 		} else v2hext := ''
 		pyscript := Format(pyscript, (buf := Buffer(A_PtrSize, 0)).Ptr, v2hext)
-		r := DllCall(addr('PyRun_SimpleString'), 'astr', pyscript)
+		if DllCall(addr('PyRun_SimpleString'), 'astr', pyscript)
+			throw Error('Error in executing initialization script. See stderr for details.')
 		return this.__instance__ := ComObjFromPtr(NumGet(buf, 'ptr'))
 		addr(f) => DllCall('GetProcAddress', 'ptr', mod, 'astr', f, 'ptr')
 	}
